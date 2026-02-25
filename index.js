@@ -1,4 +1,6 @@
- import express from "express";
+ 
+
+import express from "express";
 import mongoose, { Schema } from "mongoose";
 import helmet from "helmet";
 import cors from "cors";
@@ -11,10 +13,11 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 
 const PORT = process.env.PORT || 4000;
-
-const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://2smarthrm_db_user:YmGVf9tM7lf02qw1@cluster0.pqpzxty.mongodb.net/";
-
-const SESSION_SECRET = process.env.SESSION_SECRET || "CHANGE_ME__SESSION_SECRET__VERY_LONG_RANDOM";
+const MONGO_URI =
+  process.env.MONGO_URI ||
+  "mongodb+srv://2smarthrm_db_user:YmGVf9tM7lf02qw1@cluster0.pqpzxty.mongodb.net/";
+const SESSION_SECRET =
+  process.env.SESSION_SECRET || "CHANGE_ME__SESSION_SECRET__VERY_LONG_RANDOM";
 
 const COOKIE_NAME = process.env.COOKIE_NAME || "ex_sid";
 const PRODUCTION = process.env.NODE_ENV === "production";
@@ -26,13 +29,15 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
       .filter(Boolean)
   : [
       "http://localhost:5173",
+      "http://localhost:5175",
       "http://localhost:3000",
       "http://localhost:3001",
       "http://localhost:5174",
       "http://localhost:5176",
     ];
 
-const MASTER_EMAIL = process.env.MASTER_EMAIL || "paulo.ferreira@exportech.com.pt";
+const MASTER_EMAIL =
+  process.env.MASTER_EMAIL || "paulo.ferreira@exportech.com.pt";
 const MASTER_PASSWORD = process.env.MASTER_PASSWORD || "Admin12345!";
 
 const app = express();
@@ -95,25 +100,20 @@ const limiterAuth = rateLimit({ windowMs: 10 * 60 * 1000, max: 600 });
 const limiterLogin = rateLimit({ windowMs: 15 * 60 * 1000, max: 80 });
 const limiterPublicPost = rateLimit({ windowMs: 5 * 60 * 1000, max: 250 });
 
-const hasAnyRole = (u, roles) => {
-  if (!u) return false;
-  const arr = Array.isArray(u.roles) ? u.roles : u.role ? [u.role] : [];
-  return roles.some((r) => arr.includes(r));
-};
-
 const requireAuth =
   (roles = []) =>
   (req, res, next) => {
     const u = req.session?.user;
     if (!u) return errJson(res, "Não autenticado", 401);
-    if (roles.length && !hasAnyRole(u, roles)) return errJson(res, "Sem permissões", 403);
+    if (roles.length && !roles.includes(u.role))
+      return errJson(res, "Sem permissões", 403);
     next();
   };
 
 const normalizeEmail = (v) => String(v || "").trim().toLowerCase();
 const safeStr = (v) => String(v || "").replace(/\s+/g, " ").trim();
-
 const makeToken = () => crypto.randomBytes(24).toString("hex");
+
 
 mongoose.set("bufferCommands", false);
 
@@ -122,7 +122,12 @@ const ExportechUserSchema = new Schema(
     ex_name: { type: String, required: true },
     ex_email: { type: String, required: true, unique: true, index: true },
     ex_password_hash: { type: String, required: true },
-    ex_role: { type: String, enum: ["master", "technician"], required: true, index: true },
+    ex_role: {
+      type: String,
+      enum: ["master", "technician"],
+      required: true,
+      index: true,
+    },
     ex_technician_id: {
       type: Schema.Types.ObjectId,
       ref: "ExportechTechnician",
@@ -156,9 +161,37 @@ ExportechTechnicianSchema.pre("save", function (next) {
   next();
 });
 
+const ExportechFormSchema = new Schema(
+  {
+    ex_token: { type: String, required: true, unique: true, index: true },
+    ex_tech: {
+      type: Schema.Types.ObjectId,
+      ref: "ExportechTechnician",
+      required: true,
+      index: true,
+    },
+    ex_tech_name_snapshot: { type: String, required: true },
+    ex_created_at: { type: Date, default: Date.now, index: true },
+    ex_used_at: { type: Date, default: null, index: true },
+    ex_used_submission: {
+      type: Schema.Types.ObjectId,
+      ref: "ExportechSubmission",
+      default: null,
+    },
+  },
+  { collection: "exportech_forms" }
+);
+
+ExportechFormSchema.index({ ex_tech: 1, ex_created_at: -1 });
+
 const ExportechSubmissionSchema = new Schema(
   {
-    ex_tech: { type: Schema.Types.ObjectId, ref: "ExportechTechnician", required: true, index: true },
+    ex_tech: {
+      type: Schema.Types.ObjectId,
+      ref: "ExportechTechnician",
+      required: true,
+      index: true,
+    },
     ex_tech_name_snapshot: { type: String, required: true },
     ex_empresa: { type: String, required: true },
     ex_cliente: { type: String, required: true },
@@ -189,8 +222,15 @@ const ExportechAuditSchema = new Schema(
 );
 
 const ExportechUser = mongoose.model("ExportechUser", ExportechUserSchema);
-const ExportechTechnician = mongoose.model("ExportechTechnician", ExportechTechnicianSchema);
-const ExportechSubmission = mongoose.model("ExportechSubmission", ExportechSubmissionSchema);
+const ExportechTechnician = mongoose.model(
+  "ExportechTechnician",
+  ExportechTechnicianSchema
+);
+const ExportechForm = mongoose.model("ExportechForm", ExportechFormSchema);
+const ExportechSubmission = mongoose.model(
+  "ExportechSubmission",
+  ExportechSubmissionSchema
+);
 const ExportechAudit = mongoose.model("ExportechAudit", ExportechAuditSchema);
 
 const audit =
@@ -200,7 +240,11 @@ const audit =
       ExportechAudit.create({
         ex_actor: req.session?.user?.email || "public",
         ex_action: action,
-        ex_details: { method: req.method, path: req.originalUrl, status: res.statusCode },
+        ex_details: {
+          method: req.method,
+          path: req.originalUrl,
+          status: res.statusCode,
+        },
         ex_ip: req.ip,
       }).catch(() => {});
     });
@@ -244,15 +288,6 @@ app.post(
     const email = normalizeEmail(req.body?.email);
     const password = String(req.body?.password || "");
 
-
- 
-
-      const emailToValidate = 'a@a.com';
-      const emailRegexp = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
-      console.log("mail test = ",emailRegexp.test(emailToValidate));
-
-
-
     if (!email || !email.includes("@")) return errJson(res, "Email inválido", 422);
     if (!password || password.length < 6) return errJson(res, "Password inválida", 422);
 
@@ -265,18 +300,12 @@ app.post(
     req.session.regenerate((err) => {
       if (err) return errJson(res, "Erro de sessão", 500);
 
-      const technicianId = user.ex_technician_id ? String(user.ex_technician_id) : null;
-      const roles = [user.ex_role];
-      if (technicianId && !roles.includes("technician")) roles.push("technician");
-
       req.session.user = {
         id: String(user._id),
         email: user.ex_email,
         role: user.ex_role,
-        roles,
-        isTechnician: !!technicianId,
         name: user.ex_name,
-        technicianId,
+        technicianId: user.ex_technician_id ? String(user.ex_technician_id) : null,
       };
 
       req.session.save((err2) => {
@@ -314,7 +343,9 @@ app.get(
   requireAuth(["master"]),
   audit("technicians.list"),
   asyncH(async (_req, res) => {
-    const techs = await ExportechTechnician.find({ ex_active: true }).sort({ ex_created_at: 1 }).lean();
+    const techs = await ExportechTechnician.find({ ex_active: true })
+      .sort({ ex_created_at: 1 })
+      .lean();
 
     const out = techs.map((t) => ({
       id: String(t._id),
@@ -337,12 +368,11 @@ app.get(
   audit("technicians.me"),
   asyncH(async (req, res) => {
     const u = req.session.user;
+    if (u.role === "master") return ok(res, null);
 
-    if (!u.technicianId) return ok(res, null);
-
+    if (!u.technicianId) return errJson(res, "Conta de técnico sem technicianId", 500);
     const t = await ExportechTechnician.findById(u.technicianId).lean();
     if (!t) return errJson(res, "Técnico não encontrado", 404);
-    if (!t.ex_active) return errJson(res, "Técnico inativo", 403);
 
     ok(res, {
       id: String(t._id),
@@ -454,19 +484,59 @@ app.delete(
   })
 );
 
-app.get(
-  "/api/exportech/form-link/:techId",
-  limiterStrict,
-  requireAuth(["master"]),
-  audit("form.link"),
+app.post(
+  "/api/exportech/forms",
+  limiterAuth,
+  requireAuth(["technician", "master"]),
+  audit("forms.create"),
   asyncH(async (req, res) => {
-    const techId = String(req.params?.techId || "");
-    if (!mongoose.isValidObjectId(techId)) return errJson(res, "techId inválido", 422);
+    const u = req.session.user;
+    if (!u.technicianId) return errJson(res, "Conta de usúario sem técnico associado !", 500);
 
-    const tech = await ExportechTechnician.findById(techId).lean();
-    if (!tech || !tech.ex_active) return errJson(res, "Técnico não encontrado", 404);
+    const tech = await ExportechTechnician.findById(u.technicianId).lean();
+    if (!tech || !tech.ex_active) return errJson(res, "Técnico não encontrado !", 404);
 
-    ok(res, { publicToken: tech.ex_public_token, techName: tech.ex_name });
+    const token = makeToken();
+
+    const created = await ExportechForm.create({
+      ex_token: token,
+      ex_tech: tech._id,
+      ex_tech_name_snapshot: tech.ex_name,
+      ex_created_at: new Date(),
+      ex_used_at: null,
+      ex_used_submission: null,
+    });
+
+    ok(
+      res,
+      {
+        token: created.ex_token,
+        techName: created.ex_tech_name_snapshot,
+        createdAt: created.ex_created_at,
+      },
+      201
+    );
+  })
+);
+
+app.get(
+  "/api/exportech/forms/public/:token",
+  limiterStrict,
+  audit("forms.public_status"),
+  asyncH(async (req, res) => {
+    const token = String(req.params?.token || "").trim();
+    if (!token) return errJson(res, "token obrigatório", 422);
+
+    const form = await ExportechForm.findOne({ ex_token: token }).lean();
+    if (!form) return errJson(res, "Token inválido", 404);
+
+    ok(res, {
+      token: form.ex_token,
+      techName: form.ex_tech_name_snapshot,
+      createdAt: form.ex_created_at,
+      used: !!form.ex_used_at,
+      usedAt: form.ex_used_at,
+    });
   })
 );
 
@@ -475,11 +545,8 @@ app.post(
   limiterPublicPost,
   audit("submissions.public_create"),
   asyncH(async (req, res) => {
-    const token = String(req.body?.token || "").trim();
-    if (!token) return errJson(res, "token obrigatório", 422);
-
-    const tech = await ExportechTechnician.findOne({ ex_public_token: token, ex_active: true });
-    if (!tech) return errJson(res, "Técnico inválido", 404);
+    const formToken = String(req.body?.formToken || "").trim();
+    if (!formToken) return errJson(res, "formToken obrigatório", 422);
 
     const empresa = safeStr(req.body?.empresa);
     const cliente = safeStr(req.body?.cliente);
@@ -496,29 +563,62 @@ app.post(
     const nps = npsRaw === null || npsRaw === undefined || npsRaw === "" ? null : Number(npsRaw);
 
     const inRange15 = (n) => Number.isFinite(n) && n >= 1 && n <= 5;
-
     if (!empresa) return errJson(res, "Empresa obrigatória", 422);
     if (!cliente) return errJson(res, "Cliente obrigatório", 422);
     if (!dataAss) return errJson(res, "Data obrigatória", 422);
     if (![r1, r2, r3, r4, r5].every(inRange15)) return errJson(res, "Ratings inválidos", 422);
     if (nps !== null && !(Number.isFinite(nps) && nps >= 0 && nps <= 10)) return errJson(res, "NPS inválido", 422);
 
-    const doc = await ExportechSubmission.create({
-      ex_tech: tech._id,
-      ex_tech_name_snapshot: tech.ex_name,
-      ex_empresa: empresa,
-      ex_cliente: cliente,
-      ex_data_ass: dataAss,
-      ex_r1: r1,
-      ex_r2: r2,
-      ex_r3: r3,
-      ex_r4: r4,
-      ex_r5: r5,
-      ex_nps: nps,
-      ex_comentario: comentario,
-    });
+    const sessionDb = await mongoose.startSession();
+    try {
+      let createdId = null;
 
-    ok(res, { id: String(doc._id) }, 201);
+      await sessionDb.withTransaction(async () => {
+        const form = await ExportechForm.findOne({ ex_token: formToken }).session(sessionDb);
+        if (!form) throw Object.assign(new Error("Token inválido"), { code: 404 });
+        if (form.ex_used_at) throw Object.assign(new Error("Este formulário já foi submetido."), { code: 409 });
+
+        form.ex_used_at = new Date();
+        await form.save({ session: sessionDb });
+
+        const doc = await ExportechSubmission.create(
+          [
+            {
+              ex_tech: form.ex_tech,
+              ex_tech_name_snapshot: form.ex_tech_name_snapshot,
+              ex_empresa: empresa,
+              ex_cliente: cliente,
+              ex_data_ass: dataAss,
+              ex_r1: r1,
+              ex_r2: r2,
+              ex_r3: r3,
+              ex_r4: r4,
+              ex_r5: r5,
+              ex_nps: nps,
+              ex_comentario: comentario,
+            },
+          ],
+          { session: sessionDb }
+        );
+
+        const submission = doc?.[0];
+        createdId = submission ? String(submission._id) : null;
+
+        form.ex_used_submission = submission?._id || null;
+        await form.save({ session: sessionDb });
+      });
+
+      if (!createdId) return errJson(res, "Erro ao criar submissão", 500);
+      ok(res, { id: createdId }, 201);
+    } catch (e) {
+      const code = e?.code || 500;
+      if (code === 404) return errJson(res, "Token inválido", 404);
+      if (code === 409) return errJson(res, "Este formulário já foi submetido.", 409);
+      console.error("public submission tx error:", e && e.stack ? e.stack : e);
+      return errJson(res, "Erro ao submeter", 500);
+    } finally {
+      sessionDb.endSession().catch(() => {});
+    }
   })
 );
 
@@ -531,8 +631,8 @@ app.get(
     const u = req.session.user;
 
     const filter = {};
-    if (!hasAnyRole(u, ["master"])) {
-      if (!u.technicianId) return errJson(res, "Conta sem technicianId", 500);
+    if (u.role === "technician") {
+      if (!u.technicianId) return errJson(res, "Conta de técnico sem technicianId", 500);
       filter.ex_tech = u.technicianId;
     }
 
@@ -558,5 +658,9 @@ app.get(
   })
 );
 
-app.get("/", (_req, res) => res.json({ ok: true, status:"Page fully loaded ..." }));
+
+
+
+app.get("/" , (_req, res) => res.json({ ok: true, status:"Nice job !" })) 
+
 app.get("/api/exportech/health", (_req, res) => res.json({ ok: true }));
