@@ -1,24 +1,4 @@
-  /*
-
-const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://2smarthrm_db_user:YmGVf9tM7lf02qw1@cluster0.pqpzxty.mongodb.net/";
-const SESSION_SECRET = process.env.SESSION_SECRET || "CHANGE_ME__SESSION_SECRET__VERY_LONG_RANDOM";
-https://technicalsupportfeedbacks.exportech.com.pt
-
-
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-  : [
-      "https://technicalsupportfeedbacks.exportech.com.pt",
-      "http://technicalsupportfeedbacks.exportech.com.pt",
-      "http://localhost:5173", 
-      "http://localhost:3000", 
-    ];
-
-
-*/
+  
 
  import express from "express";
 import mongoose, { Schema } from "mongoose";
@@ -61,11 +41,7 @@ const MASTER_EMAIL =
   process.env.MASTER_EMAIL || "paulo.ferreira@exportech.com.pt";
 const MASTER_PASSWORD = process.env.MASTER_PASSWORD || "Admin12345!";
 
-/**
- * =========================
- * GLOBAL ERROR STATE (aparece no "/")
- * =========================
- */
+ 
 const runtimeState = {
   startedAt: new Date().toISOString(),
   lastError: null,
@@ -93,11 +69,7 @@ function isCiphertextParseError(err) {
   return msg.includes("Unable to parse ciphertext object");
 }
 
-/**
- * =========================
- * MONGOOSE (serverless-safe)
- * =========================
- */
+ 
 mongoose.set("bufferCommands", false);
 
 let mongoConnPromise = null;
@@ -142,11 +114,7 @@ function requireDb(req, res, next) {
     });
 }
 
-/**
- * =========================
- * APP
- * =========================
- */
+ 
 const app = express();
 app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
@@ -167,23 +135,17 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(compression());
 
-/**
- * =========================
- * SESSION STORE (sem crypto)
- * =========================
- */
+ 
 function buildSessionStore() {
   try {
     const store = MongoStore.create({
       mongoUrl: MONGO_URI,
       collectionName: "exportech_sessions",
       ttl: 60 * 60 * 8,
-      touchAfter: 60 * 10,
-      // ⚠️ NÃO usar crypto aqui se já tens sessões antigas (origina o erro)
-      // crypto: { secret: SESSION_SECRET },
+      touchAfter: 60 * 10, 
     });
 
-    // Captura erros do store (muito útil no Vercel)
+ 
     store.on("error", (e) => rememberError("session.store.error", e));
 
     runtimeState.sessionStore = "mongo";
@@ -213,27 +175,19 @@ app.use(
   })
 );
 
-/**
- * ✅ SESSION RESCUE (após session middleware)
- * Apanha o erro do ciphertext e evita 500/crash.
- */
+ 
 app.use((err, req, res, next) => {
   if (!isCiphertextParseError(err)) return next(err);
 
-  rememberError(`session.ciphertext_parse:${req.method} ${req.originalUrl}`, err);
-
-  // Limpa cookie de sessão (a sessão está corrompida/ilegível)
-  res.clearCookie(COOKIE_NAME, { path: "/" });
-
-  // Para status/auth endpoints: responde como não autenticado
+  rememberError(`session.ciphertext_parse:${req.method} ${req.originalUrl}`, err); 
+  res.clearCookie(COOKIE_NAME, { path: "/" }); 
   if (req.path === "/api/exportech/auth/status") {
     return res.status(200).json({
       ok: true,
       data: { authenticated: false, sessionCorrupted: true },
     });
   }
-
-  // Para o resto: 401 e segue vida (sem crash)
+ 
   return res.status(401).json({
     ok: false,
     error: "Sessão inválida (reinicia login)",
@@ -241,11 +195,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-/**
- * =========================
- * HELPERS
- * =========================
- */
+ 
 const ok = (res, data, code = 200) => res.status(code).json({ ok: true, data });
 const errJson = (res, message = "Erro", code = 400, issues = null) =>{
   console.log("LOG DATA = ", message);
@@ -279,11 +229,7 @@ const normalizeEmail = (v) => String(v || "").trim().toLowerCase();
 const safeStr = (v) => String(v || "").replace(/\s+/g, " ").trim();
 const makeToken = () => crypto.randomBytes(24).toString("hex");
 
-/**
- * =========================
- * SCHEMAS / MODELS
- * =========================
- */
+ 
 const ExportechUserSchema = new Schema(
   {
     ex_name: { type: String, required: true },
@@ -456,11 +402,7 @@ async function bootstrapIfStandalone() {
 }
 bootstrapIfStandalone();
 
-/**
- * =========================
- * ROUTES
- * =========================
- */
+ 
 app.get("/", (_req, res) => {
   const dbState = mongoose.connection.readyState;
   const dbStateText =
@@ -552,16 +494,11 @@ app.get(
   })
 );
 
-// ... (o resto das tuas rotas ficam iguais)
-// Só adiciona requireDb nas rotas que usam Mongo (como eu estava a fazer antes).
-// Para não alongar ainda mais aqui, manténs o resto igual ao teu código original,
-// mas idealmente mete requireDb em todas as rotas que fazem queries.
-
+ 
 app.use((err, req, res, _next) => {
   const status = err?.status || err?.code || 500;
   if (res.headersSent) return;
-
-  // se for ciphertext parse e por algum motivo não caiu no rescue:
+ 
   if (isCiphertextParseError(err)) {
     rememberError(`global_ciphertext:${req.method} ${req.originalUrl}`, err);
     res.clearCookie(COOKIE_NAME, { path: "/" });
@@ -969,5 +906,3 @@ process.on("unhandledRejection", (reason) => rememberError("process.unhandledRej
 process.on("uncaughtException", (e) => rememberError("process.uncaughtException", e));
 
 export default app;
-
-
