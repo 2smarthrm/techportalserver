@@ -1,6 +1,4 @@
-  
-
- import express from "express";
+import express from "express";
 import mongoose, { Schema } from "mongoose";
 import helmet from "helmet";
 import cors from "cors";
