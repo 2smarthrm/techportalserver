@@ -656,4 +656,10 @@ app.get(
   })
 );
 
+
+
+
+app.get("/" , (_req, res) => res.json({ ok: true, status:"Nice job !" }))
+
+
 app.get("/api/exportech/health", (_req, res) => res.json({ ok: true }));
