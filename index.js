@@ -1,4 +1,6 @@
-import express from "express";
+  
+
+ import express from "express";
 import mongoose, { Schema } from "mongoose";
 import helmet from "helmet";
 import cors from "cors";
@@ -268,8 +270,7 @@ ExportechTechnicianSchema.pre("save", function (next) {
   this.ex_name = safeStr(this.ex_name);
   this.ex_role_title = safeStr(this.ex_role_title || "Técnico");
   if (!this.ex_public_token) this.ex_public_token = makeToken();
-  this.ex_updated_at = new Date();
-  next();
+  this.ex_updated_at = new Date(); 
 });
 
 const ExportechFormSchema = new Schema(
@@ -570,6 +571,10 @@ app.get(
     ok(res, { authenticated: true, user: req.session.user });
   })
 );
+
+ 
+
+
 
 app.get(
   "/api/exportech/technicians",
@@ -895,6 +900,7 @@ app.get(
 
 
 
+
 app.get("/" , (_req, res) => res.json({ ok: true, status:"Nice job !" }));  
 app.get("/api/exportech/health", (_req, res) => res.json({ ok: true }));
 
@@ -904,3 +910,5 @@ process.on("unhandledRejection", (reason) => rememberError("process.unhandledRej
 process.on("uncaughtException", (e) => rememberError("process.uncaughtException", e));
 
 export default app;
+
+
