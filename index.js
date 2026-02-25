@@ -1,6 +1,26 @@
- 
+  /*
 
-import express from "express";
+const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://2smarthrm_db_user:YmGVf9tM7lf02qw1@cluster0.pqpzxty.mongodb.net/";
+const SESSION_SECRET = process.env.SESSION_SECRET || "CHANGE_ME__SESSION_SECRET__VERY_LONG_RANDOM";
+https://technicalsupportfeedbacks.exportech.com.pt
+
+
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  : [
+      "https://technicalsupportfeedbacks.exportech.com.pt",
+      "http://technicalsupportfeedbacks.exportech.com.pt",
+      "http://localhost:5173", 
+      "http://localhost:3000", 
+    ];
+
+
+*/
+
+ import express from "express";
 import mongoose, { Schema } from "mongoose";
 import helmet from "helmet";
 import cors from "cors";
@@ -21,6 +41,7 @@ const SESSION_SECRET =
 
 const COOKIE_NAME = process.env.COOKIE_NAME || "ex_sid";
 const PRODUCTION = process.env.NODE_ENV === "production";
+const IS_VERCEL = !!process.env.VERCEL;
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS
@@ -33,13 +54,99 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
       "http://localhost:3000",
       "http://localhost:3001",
       "http://localhost:5174",
-      "http://localhost:5176",
+      "https://technicalsupportfeedbacks.exportech.com.pt",
     ];
 
 const MASTER_EMAIL =
   process.env.MASTER_EMAIL || "paulo.ferreira@exportech.com.pt";
 const MASTER_PASSWORD = process.env.MASTER_PASSWORD || "Admin12345!";
 
+/**
+ * =========================
+ * GLOBAL ERROR STATE (aparece no "/")
+ * =========================
+ */
+const runtimeState = {
+  startedAt: new Date().toISOString(),
+  lastError: null,
+  lastDbError: null,
+  sessionStore: "unknown",
+};
+
+function rememberError(where, err) {
+  const payload = {
+    at: new Date().toISOString(),
+    where,
+    name: err?.name || "Error",
+    message: String(err?.message || err || "Unknown error"),
+    code: err?.code ?? err?.status ?? null,
+  };
+  runtimeState.lastError = payload;
+  if (String(where || "").toLowerCase().includes("mongo"))
+    runtimeState.lastDbError = payload;
+
+  console.error(`[${where}]`, err && err.stack ? err.stack : err);
+}
+
+function isCiphertextParseError(err) {
+  const msg = String(err?.message || "");
+  return msg.includes("Unable to parse ciphertext object");
+}
+
+/**
+ * =========================
+ * MONGOOSE (serverless-safe)
+ * =========================
+ */
+mongoose.set("bufferCommands", false);
+
+let mongoConnPromise = null;
+
+async function connectMongo() {
+  if (mongoose.connection.readyState === 1) return mongoose.connection;
+  if (mongoConnPromise) return mongoConnPromise;
+
+  mongoConnPromise = (async () => {
+    try {
+      const dbName = process.env.MONGO_DBNAME || undefined;
+      await mongoose.connect(MONGO_URI, {
+        dbName,
+        serverSelectionTimeoutMS: 8000,
+        connectTimeoutMS: 8000,
+        socketTimeoutMS: 20000,
+        retryWrites: true,
+      });
+      console.log("[mongo] connected");
+      return mongoose.connection;
+    } catch (e) {
+      rememberError("mongo.connect", e);
+      throw e;
+    } finally {
+      if (mongoose.connection.readyState !== 1) mongoConnPromise = null;
+    }
+  })();
+
+  return mongoConnPromise;
+}
+
+function requireDb(req, res, next) {
+  connectMongo()
+    .then(() => next())
+    .catch((e) => {
+      return res.status(503).json({
+        ok: false,
+        error: "DB indisponível",
+        type: e?.name || "MongoError",
+        message: String(e?.message || e),
+      });
+    });
+}
+
+/**
+ * =========================
+ * APP
+ * =========================
+ */
 const app = express();
 app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
@@ -60,18 +167,41 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(compression());
 
+/**
+ * =========================
+ * SESSION STORE (sem crypto)
+ * =========================
+ */
+function buildSessionStore() {
+  try {
+    const store = MongoStore.create({
+      mongoUrl: MONGO_URI,
+      collectionName: "exportech_sessions",
+      ttl: 60 * 60 * 8,
+      touchAfter: 60 * 10,
+      // ⚠️ NÃO usar crypto aqui se já tens sessões antigas (origina o erro)
+      // crypto: { secret: SESSION_SECRET },
+    });
+
+    // Captura erros do store (muito útil no Vercel)
+    store.on("error", (e) => rememberError("session.store.error", e));
+
+    runtimeState.sessionStore = "mongo";
+    return store;
+  } catch (e) {
+    rememberError("session.store.mongo_create", e);
+    runtimeState.sessionStore = "memory";
+    return undefined; // fallback MemoryStore
+  }
+}
+
 app.use(
   session({
     name: COOKIE_NAME,
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    store: MongoStore.create({
-      mongoUrl: MONGO_URI,
-      collectionName: "exportech_sessions",
-      ttl: 60 * 60 * 8,
-      touchAfter: 60 * 10,
-    }),
+    store: buildSessionStore(),
     cookie: {
       httpOnly: true,
       sameSite: PRODUCTION ? "none" : "lax",
@@ -83,15 +213,50 @@ app.use(
   })
 );
 
+/**
+ * ✅ SESSION RESCUE (após session middleware)
+ * Apanha o erro do ciphertext e evita 500/crash.
+ */
+app.use((err, req, res, next) => {
+  if (!isCiphertextParseError(err)) return next(err);
+
+  rememberError(`session.ciphertext_parse:${req.method} ${req.originalUrl}`, err);
+
+  // Limpa cookie de sessão (a sessão está corrompida/ilegível)
+  res.clearCookie(COOKIE_NAME, { path: "/" });
+
+  // Para status/auth endpoints: responde como não autenticado
+  if (req.path === "/api/exportech/auth/status") {
+    return res.status(200).json({
+      ok: true,
+      data: { authenticated: false, sessionCorrupted: true },
+    });
+  }
+
+  // Para o resto: 401 e segue vida (sem crash)
+  return res.status(401).json({
+    ok: false,
+    error: "Sessão inválida (reinicia login)",
+    type: "SessionCiphertextParseError",
+  });
+});
+
+/**
+ * =========================
+ * HELPERS
+ * =========================
+ */
 const ok = (res, data, code = 200) => res.status(code).json({ ok: true, data });
-const errJson = (res, message = "Erro", code = 400, issues = null) =>
+const errJson = (res, message = "Erro", code = 400, issues = null) =>{
+  console.log("LOG DATA = ", message);
   res.status(code).json({ ok: false, error: message, issues });
+}
 
 const asyncH =
   (fn) =>
   (req, res, next) =>
     Promise.resolve(fn(req, res, next)).catch((e) => {
-      console.error("Route error:", e && e.stack ? e.stack : e);
+      rememberError(`route:${req.method} ${req.originalUrl}`, e);
       next(e);
     });
 
@@ -114,9 +279,11 @@ const normalizeEmail = (v) => String(v || "").trim().toLowerCase();
 const safeStr = (v) => String(v || "").replace(/\s+/g, " ").trim();
 const makeToken = () => crypto.randomBytes(24).toString("hex");
 
-
-mongoose.set("bufferCommands", false);
-
+/**
+ * =========================
+ * SCHEMAS / MODELS
+ * =========================
+ */
 const ExportechUserSchema = new Schema(
   {
     ex_name: { type: String, required: true },
@@ -181,7 +348,6 @@ const ExportechFormSchema = new Schema(
   },
   { collection: "exportech_forms" }
 );
-
 ExportechFormSchema.index({ ex_tech: 1, ex_created_at: -1 });
 
 const ExportechSubmissionSchema = new Schema(
@@ -207,7 +373,6 @@ const ExportechSubmissionSchema = new Schema(
   },
   { collection: "exportech_submissions" }
 );
-
 ExportechSubmissionSchema.index({ ex_created_at: -1 });
 
 const ExportechAuditSchema = new Schema(
@@ -246,7 +411,7 @@ const audit =
           status: res.statusCode,
         },
         ex_ip: req.ip,
-      }).catch(() => {});
+      }).catch((e) => rememberError("mongo.audit.create", e));
     });
     next();
   };
@@ -268,17 +433,151 @@ async function ensureMasterUser() {
   console.log(`[exportech] Master criado: ${email} / ${MASTER_PASSWORD}`);
 }
 
-async function start() {
-  await mongoose.connect(MONGO_URI, { dbName: process.env.MONGO_DBNAME || undefined });
-  console.log("[mongo] connected");
-  await ensureMasterUser();
-  app.listen(PORT, () => console.log(`[server] http://localhost:${PORT}`));
-}
+async function bootstrapIfStandalone() {
+  try {
+    await connectMongo();
+    await ensureMasterUser();
 
-start().catch((e) => {
-  console.error("Startup error:", e);
-  process.exit(1);
+    if (!IS_VERCEL) {
+      app.listen(PORT, () => console.log(`[server] http://localhost:${PORT}`));
+    }
+  } catch (e) {
+    rememberError("bootstrap", e);
+
+    if (!IS_VERCEL) {
+      console.error(
+        "[bootstrap] DB com erro. Server continua, rotas com DB vão dar 503."
+      );
+      app.listen(PORT, () =>
+        console.log(`[server] http://localhost:${PORT} (DB com erro)`)
+      );
+    }
+  }
+}
+bootstrapIfStandalone();
+
+/**
+ * =========================
+ * ROUTES
+ * =========================
+ */
+app.get("/", (_req, res) => {
+  const dbState = mongoose.connection.readyState;
+  const dbStateText =
+    dbState === 1
+      ? "connected"
+      : dbState === 2
+      ? "connecting"
+      : dbState === 3
+      ? "disconnecting"
+      : "disconnected";
+
+  res.json({
+    ok: true,
+    status: "Nice job !",
+    env: { production: PRODUCTION, vercel: IS_VERCEL, nodeEnv: process.env.NODE_ENV || "undefined" },
+    db: { state: dbStateText, readyState: dbState, lastDbError: runtimeState.lastDbError },
+    session: { store: runtimeState.sessionStore, cookieName: COOKIE_NAME },
+    lastError: runtimeState.lastError,
+    startedAt: runtimeState.startedAt,
+  });
 });
+
+app.get("/api/exportech/health", (_req, res) => {
+  const s = mongoose.connection.readyState;
+  res.json({
+    ok: true,
+    dbReadyState: s,
+    dbConnected: s === 1,
+    lastDbError: runtimeState.lastDbError,
+    sessionStore: runtimeState.sessionStore,
+  });
+});
+
+app.post(
+  "/api/exportech/auth/login",
+  limiterLogin,
+  requireDb,
+  audit("auth.login"),
+  asyncH(async (req, res) => {
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || "");
+
+    if (!email || !email.includes("@")) return errJson(res, "Email inválido", 422);
+    if (!password || password.length < 6) return errJson(res, "Password inválida", 422);
+
+    const user = await ExportechUser.findOne({ ex_email: email, ex_active: true });
+    if (!user) return errJson(res, "Credenciais inválidas", 401);
+
+    const passOk = await bcrypt.compare(password, user.ex_password_hash);
+    if (!passOk) return errJson(res, "Credenciais inválidas", 401);
+
+    req.session.regenerate((err) => {
+      if (err) return errJson(res, "Erro de sessão", 500);
+
+      req.session.user = {
+        id: String(user._id),
+        email: user.ex_email,
+        role: user.ex_role,
+        name: user.ex_name,
+        technicianId: user.ex_technician_id ? String(user.ex_technician_id) : null,
+      };
+
+      req.session.save((err2) => {
+        if (err2) return errJson(res, "Erro de sessão", 500);
+        ok(res, { authenticated: true, user: req.session.user });
+      });
+    });
+  })
+);
+
+app.post(
+  "/api/exportech/auth/logout",
+  limiterAuth,
+  audit("auth.logout"),
+  asyncH(async (req, res) => {
+    req.session.destroy(() => {
+      res.clearCookie(COOKIE_NAME, { path: "/" });
+      ok(res, { authenticated: false });
+    });
+  })
+);
+
+app.get(
+  "/api/exportech/auth/status",
+  limiterStrict,
+  asyncH(async (req, res) => {
+    if (!req.session?.user) return ok(res, { authenticated: false });
+    ok(res, { authenticated: true, user: req.session.user });
+  })
+);
+
+// ... (o resto das tuas rotas ficam iguais)
+// Só adiciona requireDb nas rotas que usam Mongo (como eu estava a fazer antes).
+// Para não alongar ainda mais aqui, manténs o resto igual ao teu código original,
+// mas idealmente mete requireDb em todas as rotas que fazem queries.
+
+app.use((err, req, res, _next) => {
+  const status = err?.status || err?.code || 500;
+  if (res.headersSent) return;
+
+  // se for ciphertext parse e por algum motivo não caiu no rescue:
+  if (isCiphertextParseError(err)) {
+    rememberError(`global_ciphertext:${req.method} ${req.originalUrl}`, err);
+    res.clearCookie(COOKIE_NAME, { path: "/" });
+    return res.status(200).json({ ok: true, data: { authenticated: false, sessionCorrupted: true } });
+  }
+
+  rememberError(`global_error:${req.method} ${req.originalUrl}`, err);
+
+  res.status(status >= 400 && status <= 599 ? status : 500).json({
+    ok: false,
+    error: "Erro interno",
+    type: err?.name || "Error",
+    message: String(err?.message || err || "Unknown error"),
+  });
+});
+ 
 
 app.post(
   "/api/exportech/auth/login",
@@ -661,6 +960,14 @@ app.get(
 
 
 
-app.get("/" , (_req, res) => res.json({ ok: true, status:"Nice job !" })) 
-
+app.get("/" , (_req, res) => res.json({ ok: true, status:"Nice job !" }));  
 app.get("/api/exportech/health", (_req, res) => res.json({ ok: true }));
+
+
+
+process.on("unhandledRejection", (reason) => rememberError("process.unhandledRejection", reason));
+process.on("uncaughtException", (e) => rememberError("process.uncaughtException", e));
+
+export default app;
+
+
