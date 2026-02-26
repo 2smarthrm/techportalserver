@@ -153,7 +153,7 @@ function buildSessionStore() {
   } catch (e) {
     rememberError("session.store.mongo_create", e);
     runtimeState.sessionStore = "memory";
-    return undefined;
+    return undefined; // fallback MemoryStore
   }
 }
 
