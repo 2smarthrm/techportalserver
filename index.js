@@ -166,7 +166,7 @@ app.use(
     store: buildSessionStore(),
     cookie: {
       httpOnly: true,
-      sameSite: PRODUCTION ? "none" : "lax",
+      sameSite:"none",
       secure: PRODUCTION,
       maxAge: 1000 * 60 * 60 * 8 * 5,
       path: "/",
